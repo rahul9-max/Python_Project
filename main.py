@@ -3,6 +3,8 @@ import mysql.connector
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import parse_qs
 from pathlib import Path
+import hashlib
+import secrets
 import html
 
 
@@ -20,17 +22,48 @@ cursor = conn.cursor()
 print("MySQL Connected Successfully!")
 
 
-# 2. Request Handler
+# 2. Password Hashing Functions
+
+def hash_password(password):
+
+    salt = secrets.token_bytes(16)
+
+    hashed = hashlib.pbkdf2_hmac(
+        "sha256",
+        password.encode("utf-8"),
+        salt,
+        600000
+    )
+
+    return salt.hex() + "$" + hashed.hex()
+
+
+def verify_password(password, stored_password):
+
+    salt_hex, hash_hex = stored_password.split("$")
+
+    salt = bytes.fromhex(salt_hex)
+
+    new_hash = hashlib.pbkdf2_hmac(
+        "sha256",
+        password.encode("utf-8"),
+        salt,
+        600000
+    )
+
+    return secrets.compare_digest(
+        new_hash.hex(),
+        hash_hex
+    )
+
+
+# 3. Request Handler
 
 class MyHandler(BaseHTTPRequestHandler):
 
-    # Display HTML Pages
+    # Send HTML Page
 
-    def send_page(self, filename):
-
-        file_path = Path(__file__).parent / filename
-
-        content = file_path.read_text(encoding="utf-8")
+    def send_html(self, content):
 
         self.send_response(200)
 
@@ -44,20 +77,35 @@ class MyHandler(BaseHTTPRequestHandler):
         self.wfile.write(content.encode("utf-8"))
 
 
+    # Read HTML Files
+
+    def send_page(self, filename):
+
+        file_path = Path(__file__).parent / filename
+
+        content = file_path.read_text(encoding="utf-8")
+
+        self.send_html(content)
+
+
     # GET Request
 
     def do_GET(self):
 
         if self.path == "/":
+
             self.send_page("home.html")
 
         elif self.path == "/signup":
+
             self.send_page("signUp.html")
 
         elif self.path == "/login":
+
             self.send_page("login.html")
 
         else:
+
             self.send_error(404, "Page Not Found")
 
 
@@ -71,17 +119,34 @@ class MyHandler(BaseHTTPRequestHandler):
 
         data = parse_qs(body)
 
+
         # SIGNUP
 
         if self.path == "/signup":
 
             name = data.get("name", [""])[0].strip()
+
             email = data.get("email", [""])[0].strip()
+
             password = data.get("password", [""])[0]
 
+
+            # Check Empty Fields
+
             if not name or not email or not password:
-                self.send_error(400, "All fields are required")
+
+                self.send_html("""
+                    <h2>All Fields Are Required!</h2>
+                    <a href="/signup">Try Again</a>
+                """)
+
                 return
+
+
+            # Hash Password
+
+            hashed_password = hash_password(password)
+
 
             try:
 
@@ -90,16 +155,18 @@ class MyHandler(BaseHTTPRequestHandler):
                 VALUES (%s, %s, %s)
                 """
 
-                values = (name, email, password)
+                values = (name, email, hashed_password)
 
                 cursor.execute(query, values)
 
                 conn.commit()
 
+
                 self.send_html("""
                     <h2>Signup Successful!</h2>
                     <a href="/login">Login Now</a>
                 """)
+
 
             except mysql.connector.IntegrityError:
 
@@ -110,24 +177,28 @@ class MyHandler(BaseHTTPRequestHandler):
                     <a href="/signup">Try Again</a>
                 """)
 
+
         # LOGIN
 
         elif self.path == "/login":
 
             email = data.get("email", [""])[0].strip()
+
             password = data.get("password", [""])[0]
 
+
             query = """
-            SELECT name
+            SELECT name, password
             FROM users
-            WHERE email = %s AND password = %s
+            WHERE email = %s
             """
 
-            cursor.execute(query, (email, password))
+            cursor.execute(query, (email,))
 
             user = cursor.fetchone()
 
-            if user:
+
+            if user and verify_password(password, user[1]):
 
                 name = html.escape(user[0])
 
@@ -149,23 +220,7 @@ class MyHandler(BaseHTTPRequestHandler):
             self.send_error(404, "Page Not Found")
 
 
-    # Send HTML Response
-
-    def send_html(self, content):
-
-        self.send_response(200)
-
-        self.send_header(
-            "Content-Type",
-            "text/html; charset=utf-8"
-        )
-
-        self.end_headers()
-
-        self.wfile.write(content.encode("utf-8"))
-
-
-# 3. Start Server
+# 4. Start Server
 
 server = HTTPServer(("localhost", 8000), MyHandler)
 
